@@ -1,10 +1,73 @@
+use std::fmt::{Display, Formatter};
 use std::str::FromStr;
+use actix_web::{App, HttpResponse, HttpServer, web, get, error, ResponseError};
+use actix_web::http::StatusCode;
+use actix_web::web::Json;
+use serde_json::{json, Value};
+use serde::{Serialize};
 use web3::contract::{Contract, Options};
 use web3::types::{Address, U256};
+use crate::CustomResponseErrors::{ConnectionProblems, InvalidToken};
 
-#[tokio::main]
-async fn main() -> web3::Result<()> {
-    let transport = web3::transports::Http::new("https://bsc-dataseed.binance.org/")?;
+#[derive(Debug)]
+enum CustomResponseErrors {
+    InvalidToken(web3::contract::Error),
+    ConnectionProblems(String)
+}
+
+impl CustomResponseErrors {
+    pub fn name(&self) -> String {
+        match self {
+            Self::InvalidToken(e) => e.to_string(),
+            Self::ConnectionProblems(error) => error.to_string()
+        }
+    }
+
+}
+
+impl Display for CustomResponseErrors {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.status_code())
+    }
+}
+
+impl error::ResponseError for CustomResponseErrors {
+    fn status_code(&self) -> StatusCode {
+        match *self {
+            CustomResponseErrors::InvalidToken(_) => StatusCode::NOT_FOUND,
+            CustomResponseErrors::ConnectionProblems(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    fn error_response(&self) -> HttpResponse {
+        let status_code = self.status_code();
+        let error_response = ErrorResponse {
+            code: status_code.as_u16(),
+            message: self.to_string(),
+            error: self.name(),
+        };
+
+        HttpResponse::build(self.status_code())
+            .json(error_response)
+    }
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    code: u16,
+    error: String,
+    message: String,
+}
+
+#[get("/binance/token/{id}")]
+async fn owner_of(id: web::Path<i64>) -> Result<Json<Value>, CustomResponseErrors> {
+    let t = web3::transports::Http::new("https://bsc-dataseed.binance.org/");
+
+    let transport = match t {
+        Ok(transport) => transport,
+        Err(_error) => return Err(ConnectionProblems(String::from("Connection problems to the blockchain")))
+    };
+
     let web3 = web3::Web3::new(transport);
 
     web3.eth();
@@ -22,21 +85,44 @@ async fn main() -> web3::Result<()> {
         .await
         .unwrap();
 
-    let tokenid: U256 = U256::from(9000);
+    let token_id: U256 = U256::from(id.into_inner());
 
-    let owner: Address = token_contract
-        .query("ownerOf", tokenid, None, Options::default(), None)
-        .await
-        .expect("Token inexistente");
+    let o: Result<Address, web3::contract::Error> = token_contract
+        .query("ownerOf", token_id, None, Options::default(), None)
+        .await;
+
+    let owner = match o {
+        Ok(address) => address,
+        Err(e) => return Err(InvalidToken(e))
+    };
 
     let token_uri: String = token_contract
-        .query("tokenURI", tokenid, None, Options::default(), None)
+        .query("tokenURI", token_id, None, Options::default(), None)
         .await
         .unwrap();
 
-    println!("Token name: {}, total supply: {}", token_name, total_supply);
-    println!("NFT of id {} is owned by: {}", tokenid, owner);
-    println!("Token URI: {}", token_uri);
+    Ok(web::Json(json!({
+        "owner": owner,
+        "uri" : token_uri,
+        "token_name" : token_name,
+        "total_supply" : total_supply
+    })))
+}
 
-    Ok(())
+#[get("/")]
+async fn index() -> Json<Value> {
+    web::Json(json!({
+        "Hello": "World!",
+    }))
+}
+
+#[actix_web::main] // or #[tokio::main]
+async fn main() -> std::io::Result<()> {
+    HttpServer::new(|| App::new()
+        .service(owner_of)
+        .service(index)
+    )
+        .bind(("127.0.0.1", 8080))?
+        .run()
+        .await
 }
