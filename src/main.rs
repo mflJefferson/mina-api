@@ -148,8 +148,8 @@ async fn local_accounts() -> Result<Json<Vec<AccountResponse>>, CustomResponseEr
     for account in accounts {
         let balance = web3.eth().balance(account, None).await.unwrap();
         vec.push(AccountResponse {
-            account: account,
-            balance: balance,
+            account,
+            balance,
         });
     }
 
