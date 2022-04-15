@@ -1,28 +1,27 @@
-use std::fmt::{Display, Formatter};
-use std::str::FromStr;
-use actix_web::{App, HttpResponse, HttpServer, web, get, error, ResponseError};
+use crate::CustomResponseErrors::{ConnectionProblems, InvalidToken};
 use actix_web::http::StatusCode;
 use actix_web::web::{Json};
+use actix_web::{error, get, web, App, HttpResponse, HttpServer, ResponseError};
 use serde_json::{json, Value};
 use serde::{Serialize, Deserialize};
 use web3::contract::{Contract, Options};
 use web3::types::{Address, U256};
-use crate::CustomResponseErrors::{ConnectionProblems, InvalidToken};
+use std::fmt::{Display, Formatter};
+use std::str::FromStr;
 
 #[derive(Debug)]
 enum CustomResponseErrors {
     InvalidToken(web3::contract::Error),
-    ConnectionProblems(String)
+    ConnectionProblems(String),
 }
 
 impl CustomResponseErrors {
     pub fn name(&self) -> String {
         match self {
             Self::InvalidToken(e) => e.to_string(),
-            Self::ConnectionProblems(error) => error.to_string()
+            Self::ConnectionProblems(error) => error.to_string(),
         }
     }
-
 }
 
 impl Display for CustomResponseErrors {
@@ -47,8 +46,7 @@ impl error::ResponseError for CustomResponseErrors {
             error: self.name(),
         };
 
-        HttpResponse::build(self.status_code())
-            .json(error_response)
+        HttpResponse::build(self.status_code()).json(error_response)
     }
 }
 
@@ -86,13 +84,23 @@ impl Default for Pagination {
     }
 }
 
+#[derive(Serialize)]
+struct AccountResponse {
+    account: Address,
+    balance: U256,
+}
+
 #[get("/binance/token/{id}")]
 async fn owner_of(id: web::Path<i64>) -> Result<Json<Value>, CustomResponseErrors> {
     let t = web3::transports::Http::new("https://bsc-dataseed.binance.org/");
 
     let transport = match t {
         Ok(transport) => transport,
-        Err(_error) => return Err(ConnectionProblems(String::from("Connection problems to the blockchain")))
+        Err(_error) => {
+            return Err(ConnectionProblems(String::from(
+                "Connection problems to the blockchain",
+            )))
+        }
     };
 
     let web3 = web3::Web3::new(transport);
@@ -120,7 +128,7 @@ async fn owner_of(id: web::Path<i64>) -> Result<Json<Value>, CustomResponseError
 
     let owner = match o {
         Ok(address) => address,
-        Err(e) => return Err(InvalidToken(e))
+        Err(e) => return Err(InvalidToken(e)),
     };
 
     let token_uri: String = token_contract
@@ -188,6 +196,45 @@ async fn tokens(pagination: web::Query<Pagination>) -> Result<Json<TokensRespons
     Ok(web::Json(tokens_response))
 }
 
+#[get("/api/local")]
+async fn local_accounts() -> Result<Json<Vec<AccountResponse>>, CustomResponseErrors> {
+    let t = web3::transports::Http::new("http://127.0.0.1:7545");
+    let transport = match t {
+        Ok(transport) => transport,
+        Err(_error) => {
+            return Err(ConnectionProblems(String::from(
+                "Connection problems to the blockchain",
+            )))
+        }
+    };
+
+    let web3 = web3::Web3::new(transport);
+
+    println!("Calling accounts.");
+    let accs = web3.eth().accounts().await;
+    let accounts = match accs {
+        Ok(accounts) => accounts,
+        Err(_error) => {
+            return Err(ConnectionProblems(String::from(
+                "Connection problems to the blockchain",
+            )))
+        }
+    };
+    // println!("Accounts: {:?}", accounts);
+    // accounts.push("00a329c0648769a73afac7f9381e08fb43dbea72".parse().unwrap());
+
+    let mut vec: Vec<AccountResponse> = Vec::new();
+    for account in accounts {
+        let balance = web3.eth().balance(account, None).await.unwrap();
+        vec.push(AccountResponse {
+            account,
+            balance,
+        });
+    }
+
+    Ok(web::Json(vec))
+}
+
 #[get("/")]
 async fn index() -> Json<Value> {
     web::Json(json!({
@@ -197,11 +244,13 @@ async fn index() -> Json<Value> {
 
 #[actix_web::main] // or #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    HttpServer::new(|| App::new()
-        .service(owner_of)
-        .service(index)
-        .service(tokens)
-    )
+    HttpServer::new(|| {
+        App::new()
+            .service(owner_of)
+            .service(index)
+            .service(local_accounts)
+            .service(tokens)
+    })
         .bind(("127.0.0.1", 8080))?
         .run()
         .await
