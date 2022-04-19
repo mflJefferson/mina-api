@@ -177,7 +177,7 @@ async fn tokens(pagination: web::Query<Pagination>) -> Result<Json<TokensRespons
 
         let owner = match o {
             Ok(address) => address,
-            Err(e) => return Err(InvalidToken(e))
+            Err(_e) => break
         };
 
         let token = Token {
